@@ -11,6 +11,7 @@ const {
   OPENAI_MODEL = 'gpt-4o',
   EMBEDDING_MODEL = 'text-embedding-3-small',
   DATABASE_URL,
+  POSTGRES_URL,
   DATABASE_QUERY_TIMEOUT = '5000',
   RAG_TOP_K = '5',
   API_CORS_ORIGINS = 'http://localhost:5173',
@@ -20,12 +21,14 @@ if (!OPENAI_API_KEY) {
   throw new Error('Missing OPENAI_API_KEY');
 }
 
-if (!DATABASE_URL) {
+const RESOLVED_DATABASE_URL = DATABASE_URL || POSTGRES_URL;
+
+if (!RESOLVED_DATABASE_URL) {
   throw new Error('Missing DATABASE_URL');
 }
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-const pool = new Pool({ connectionString: DATABASE_URL });
+const pool = new Pool({ connectionString: RESOLVED_DATABASE_URL });
 
 const corsOrigins = API_CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
 
