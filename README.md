@@ -19,10 +19,14 @@ The API uses:
 
 ```
 OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://openrouter.ai/api/v1   # optional (for OpenRouter)
+OPENROUTER_APP_URL=https://harry-s-f1-data.vercel.app
+OPENROUTER_APP_NAME=harry-s-f1-api-s
 DATABASE_URL=postgresql://...
 API_CORS_ORIGINS=https://harry-s-f1-data.vercel.app,https://harry-s-f1-data-git-main-harishmarans-projects.vercel.app
 OPENAI_MODEL=gpt-4o
 EMBEDDING_MODEL=text-embedding-3-small
+ENABLE_KNOWLEDGE_BASE=true
 RAG_TOP_K=5
 DATABASE_QUERY_TIMEOUT=5000
 ```
@@ -63,4 +67,3 @@ npm run dev
 ```
 
 The API runs at `http://localhost:3000` (Vercel dev) or directly with Node.
-

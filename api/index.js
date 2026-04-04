@@ -9,7 +9,11 @@ const app = express();
 const {
   OPENAI_API_KEY,
   OPENAI_MODEL = 'gpt-4o',
+  OPENAI_BASE_URL,
+  OPENROUTER_APP_URL,
+  OPENROUTER_APP_NAME,
   EMBEDDING_MODEL = 'text-embedding-3-small',
+  ENABLE_KNOWLEDGE_BASE = 'true',
   DATABASE_URL,
   POSTGRES_URL,
   DATABASE_QUERY_TIMEOUT = '5000',
@@ -27,7 +31,17 @@ if (!RESOLVED_DATABASE_URL) {
   throw new Error('Missing DATABASE_URL');
 }
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const defaultHeaders = {};
+if (OPENAI_BASE_URL && OPENAI_BASE_URL.includes('openrouter.ai')) {
+  if (OPENROUTER_APP_URL) defaultHeaders['HTTP-Referer'] = OPENROUTER_APP_URL;
+  if (OPENROUTER_APP_NAME) defaultHeaders['X-Title'] = OPENROUTER_APP_NAME;
+}
+
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+  baseURL: OPENAI_BASE_URL || undefined,
+  defaultHeaders,
+});
 const pool = new Pool({ connectionString: RESOLVED_DATABASE_URL });
 
 const corsOrigins = API_CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
@@ -103,6 +117,8 @@ Notes:
 - pit_stops.duration is stored as a decimal seconds string (e.g. '23.456').
 `.trim();
 
+const knowledgeEnabled = ENABLE_KNOWLEDGE_BASE === 'true' && Boolean(EMBEDDING_MODEL);
+
 const tools = [
   {
     type: 'function',
@@ -118,7 +134,10 @@ const tools = [
       },
     },
   },
-  {
+];
+
+if (knowledgeEnabled) {
+  tools.push({
     type: 'function',
     function: {
       name: 'f1_knowledge',
@@ -132,8 +151,8 @@ const tools = [
         required: ['query'],
       },
     },
-  },
-];
+  });
+}
 
 const timeoutMs = Number(DATABASE_QUERY_TIMEOUT) || 5000;
 
@@ -163,6 +182,9 @@ async function runSqlQuery(query) {
 }
 
 async function runKnowledgeSearch(query, topK) {
+  if (!knowledgeEnabled) {
+    return { error: 'Knowledge base is disabled.', results: [], result_count: 0 };
+  }
   try {
     const embeddingRes = await openai.embeddings.create({
       model: EMBEDDING_MODEL,
