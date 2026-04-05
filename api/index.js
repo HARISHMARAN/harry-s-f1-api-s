@@ -138,6 +138,109 @@ function isChampionQuestion(text) {
   return t.includes('champion') || t.includes('world champion') || t.includes('championship winner');
 }
 
+function normalizeText(text) {
+  return text.toLowerCase().replace(/[?.!,]/g, '').trim();
+}
+
+function extractDriverNameFromTeammateQuery(text) {
+  const cleaned = normalizeText(text)
+    .replace(/who is|whos|who's|current|the|a|an|driver|f1|formula one/g, '')
+    .replace(/team mate|teammate/g, '')
+    .replace(/of|for/g, '')
+    .replace(/'s/g, '')
+    .trim();
+  return cleaned || null;
+}
+
+function extractDriverNameFromWhoIs(text) {
+  const cleaned = normalizeText(text);
+  if (cleaned.startsWith('who is ')) return cleaned.slice(7).trim();
+  if (cleaned.startsWith("who's ")) return cleaned.slice(6).trim();
+  if (cleaned.startsWith('whos ')) return cleaned.slice(5).trim();
+  return null;
+}
+
+async function findDriverByName(name) {
+  const cleaned = normalizeText(name);
+  const exact = await pool.query(
+    `
+    SELECT driverId, forename, surname, nationality, driverRef, code
+    FROM drivers
+    WHERE lower(forename || ' ' || surname) = $1
+       OR lower(driverRef) = $1
+       OR lower(code) = $1
+       OR lower(surname) = $1
+    LIMIT 1
+    `,
+    [cleaned],
+  );
+  if (exact.rows?.[0]) return exact.rows[0];
+
+  const like = await pool.query(
+    `
+    SELECT driverId, forename, surname, nationality, driverRef, code
+    FROM drivers
+    WHERE lower(forename || ' ' || surname) ILIKE $1
+    LIMIT 1
+    `,
+    [`%${cleaned}%`],
+  );
+  return like.rows?.[0] ?? null;
+}
+
+async function getLatestRaceId(year, allowFuture) {
+  const result = await pool.query(
+    `
+    SELECT raceId, round
+    FROM races
+    WHERE year = $1
+      AND ($2::boolean = true OR date <= CURRENT_DATE)
+    ORDER BY round DESC
+    LIMIT 1
+    `,
+    [year, allowFuture],
+  );
+  return result.rows?.[0] ?? null;
+}
+
+async function getDriverTeammateName(driverId, year, allowFuture) {
+  const latestRace = await getLatestRaceId(year, allowFuture);
+  if (!latestRace) return null;
+
+  const constructorRes = await pool.query(
+    `
+    SELECT constructorId
+    FROM results
+    WHERE raceId = $1 AND driverId = $2
+    LIMIT 1
+    `,
+    [latestRace.raceid ?? latestRace.raceId, driverId],
+  );
+  const constructorId = constructorRes.rows?.[0]?.constructorid ?? constructorRes.rows?.[0]?.constructorId;
+  if (!constructorId) return null;
+
+  const teammates = await pool.query(
+    `
+    SELECT d.forename, d.surname
+    FROM results r
+    JOIN drivers d ON d.driverId = r.driverId
+    WHERE r.raceId = $1
+      AND r.constructorId = $2
+      AND r.driverId <> $3
+    ORDER BY r.positionOrder NULLS LAST
+    `,
+    [latestRace.raceid ?? latestRace.raceId, constructorId, driverId],
+  );
+  if (!teammates.rows?.length) return null;
+  return teammates.rows.map((row) => `${row.forename} ${row.surname}`).join(', ');
+}
+
+async function getDriverProfileAnswer(name) {
+  const driver = await findDriverByName(name);
+  if (!driver) return null;
+  return `${driver.forename} ${driver.surname} is a ${driver.nationality} Formula One driver.`;
+}
+
 const tools = toolsDisabled
   ? []
   : [
@@ -342,6 +445,41 @@ async function runKnowledgeSearch(query, topK) {
 async function runAgent({ message, history }) {
   const currentYear = new Date().getUTCFullYear();
   const askedYear = extractYear(message);
+
+  // Deterministic teammate answers (avoid LLM hallucinations)
+  if (message.toLowerCase().includes('teammate') || message.toLowerCase().includes('team mate')) {
+    const subject = extractDriverNameFromTeammateQuery(message);
+    if (subject) {
+      const driver = await findDriverByName(subject);
+      if (driver) {
+        const targetYear = askedYear ?? currentYear;
+        const allowFuture = targetYear < currentYear;
+        const teammate = await getDriverTeammateName(driver.driverid ?? driver.driverId, targetYear, allowFuture);
+        if (teammate) {
+          return { answer: `${teammate}.`, toolCalls: ['sql_query'] };
+        }
+      }
+      return { answer: 'No teammate data found.', toolCalls: [] };
+    }
+  }
+
+  // Deterministic driver profile answers
+  const whoIs = extractDriverNameFromWhoIs(message);
+  if (whoIs) {
+    const profile = await getDriverProfileAnswer(whoIs);
+    if (profile) {
+      return { answer: profile, toolCalls: ['sql_query'] };
+    }
+  } else {
+    const shortName = normalizeText(message);
+    if (shortName && shortName.length <= 20 && !shortName.includes(' ')) {
+      const profile = await getDriverProfileAnswer(shortName);
+      if (profile) {
+        return { answer: profile, toolCalls: ['sql_query'] };
+      }
+    }
+  }
+
   if (askedYear && askedYear >= currentYear && isChampionQuestion(message)) {
     const leader = await getCurrentLeader(askedYear);
     if (leader) {
