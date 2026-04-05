@@ -128,6 +128,16 @@ const knowledgeEnabled = ENABLE_KNOWLEDGE_BASE === 'true' && Boolean(EMBEDDING_M
 const isOpenRouter = Boolean(OPENAI_BASE_URL && OPENAI_BASE_URL.includes('openrouter.ai'));
 const toolsDisabled = DISABLE_TOOLS === 'true' || (isOpenRouter && OPENAI_MODEL === 'openrouter/free');
 
+function extractYear(text) {
+  const match = text.match(/\b(19\d{2}|20\d{2})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function isChampionQuestion(text) {
+  const t = text.toLowerCase();
+  return t.includes('champion') || t.includes('world champion') || t.includes('championship winner');
+}
+
 const tools = toolsDisabled
   ? []
   : [
@@ -230,6 +240,40 @@ async function runSqlQuery(query) {
   }
 }
 
+async function getCurrentLeader(year) {
+  try {
+    const result = await pool.query(
+      `
+      WITH latest_race AS (
+        SELECT raceId, round
+        FROM races
+        WHERE year = $1
+          AND date <= CURRENT_DATE
+        ORDER BY round DESC
+        LIMIT 1
+      )
+      SELECT d.forename, d.surname, ds.points, lr.round
+      FROM driver_standings ds
+      JOIN drivers d ON d.driverId = ds.driverId
+      JOIN latest_race lr ON ds.raceId = lr.raceId
+      WHERE ds.position = 1
+      LIMIT 1
+      `,
+      [year],
+    );
+
+    const row = result.rows?.[0];
+    if (!row) return null;
+    return {
+      name: `${row.forename} ${row.surname}`,
+      points: row.points,
+      round: row.round,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function runKnowledgeSearch(query, topK) {
   if (!knowledgeEnabled) {
     return { error: 'Knowledge base is disabled.', results: [], result_count: 0 };
@@ -267,6 +311,22 @@ async function runKnowledgeSearch(query, topK) {
 }
 
 async function runAgent({ message, history }) {
+  const currentYear = new Date().getUTCFullYear();
+  const askedYear = extractYear(message);
+  if (askedYear && askedYear >= currentYear && isChampionQuestion(message)) {
+    const leader = await getCurrentLeader(askedYear);
+    if (leader) {
+      return {
+        answer: `The ${askedYear} season is still ongoing. Current championship leader: ${leader.name} (after round ${leader.round}).`,
+        toolCalls: ['sql_query'],
+      };
+    }
+    return {
+      answer: `The ${askedYear} season is still ongoing, so there is no world champion yet.`,
+      toolCalls: [],
+    };
+  }
+
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...(history ?? []),
