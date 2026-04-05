@@ -274,6 +274,35 @@ async function getCurrentLeader(year) {
   }
 }
 
+async function getSeasonChampion(year) {
+  try {
+    const result = await pool.query(
+      `
+      WITH last_race AS (
+        SELECT raceId
+        FROM races
+        WHERE year = $1
+        ORDER BY round DESC
+        LIMIT 1
+      )
+      SELECT d.forename, d.surname
+      FROM driver_standings ds
+      JOIN drivers d ON d.driverId = ds.driverId
+      JOIN last_race lr ON ds.raceId = lr.raceId
+      WHERE ds.position = 1
+      LIMIT 1
+      `,
+      [year],
+    );
+
+    const row = result.rows?.[0];
+    if (!row) return null;
+    return `${row.forename} ${row.surname}`;
+  } catch {
+    return null;
+  }
+}
+
 async function runKnowledgeSearch(query, topK) {
   if (!knowledgeEnabled) {
     return { error: 'Knowledge base is disabled.', results: [], result_count: 0 };
@@ -323,6 +352,20 @@ async function runAgent({ message, history }) {
     }
     return {
       answer: `The ${askedYear} season is still ongoing, so there is no world champion yet.`,
+      toolCalls: [],
+    };
+  }
+
+  if (askedYear && askedYear < currentYear && isChampionQuestion(message)) {
+    const champion = await getSeasonChampion(askedYear);
+    if (champion) {
+      return {
+        answer: `${champion}.`,
+        toolCalls: ['sql_query'],
+      };
+    }
+    return {
+      answer: `No championship data found for ${askedYear}.`,
       toolCalls: [],
     };
   }
