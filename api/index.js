@@ -234,14 +234,17 @@ async function runAgent({ message, history }) {
 
   for (let i = 0; i < 4; i += 1) {
     let response;
+    const request = {
+      model: OPENAI_MODEL,
+      messages,
+      temperature: 0.2,
+    };
+    if (tools.length) {
+      request.tools = tools;
+      request.tool_choice = 'auto';
+    }
     try {
-      response = await openai.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages,
-        tools,
-        tool_choice: tools.length ? 'auto' : 'none',
-        temperature: 0.2,
-      });
+      response = await openai.chat.completions.create(request);
     } catch (err) {
       if (!tools.length) {
         throw err;
