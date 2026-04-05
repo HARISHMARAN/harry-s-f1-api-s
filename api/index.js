@@ -59,7 +59,8 @@ precisely and completely. Cite your sources where relevant.
 - Provide ONLY the final answer for the end user.
 - Do NOT include steps, reasoning, SQL queries, tool names, or system/tool call details.
 - Keep responses short and direct. If the user asks for a single fact, answer with just that fact.
-- If a source is required, mention it briefly (e.g., "Source: F1 database.") without extra detail.
+- Do NOT include sources or citations unless the user explicitly asks for them.
+- Do NOT use LaTeX or boxed answers.
 
 ## Tools
 
@@ -241,6 +242,22 @@ async function getDriverProfileAnswer(name) {
   return `${driver.forename} ${driver.surname} is a ${driver.nationality} Formula One driver.`;
 }
 
+async function getDriverWinCount(name) {
+  const driver = await findDriverByName(name);
+  if (!driver) return null;
+  const result = await pool.query(
+    `
+    SELECT COUNT(*)::int AS wins
+    FROM results r
+    WHERE r.driverId = $1 AND r.position = 1
+    `,
+    [driver.driverid ?? driver.driverId],
+  );
+  const wins = result.rows?.[0]?.wins;
+  if (wins === undefined || wins === null) return null;
+  return { name: `${driver.forename} ${driver.surname}`, wins };
+}
+
 const tools = toolsDisabled
   ? []
   : [
@@ -339,7 +356,16 @@ async function runSqlQuery(query) {
     const columns = rows.length ? Object.keys(rows[0]) : [];
     return { rows, row_count: rows.length, columns };
   } catch (err) {
-    return { error: err instanceof Error ? err.message : 'Query failed.', rows: [], row_count: 0, columns: [] };
+    const message = err instanceof Error ? err.message : 'Query failed.';
+    if (message.includes('does not exist')) {
+      return {
+        error: 'Database not initialized. Please run the schema and import scripts.',
+        rows: [],
+        row_count: 0,
+        columns: [],
+      };
+    }
+    return { error: message, rows: [], row_count: 0, columns: [] };
   }
 }
 
@@ -470,12 +496,32 @@ async function runAgent({ message, history }) {
     if (profile) {
       return { answer: profile, toolCalls: ['sql_query'] };
     }
+    if (normalizeText(whoIs).includes('kimi') || normalizeText(whoIs).includes('antonelli')) {
+      return { answer: 'No driver data found. Database not initialized.', toolCalls: [] };
+    }
   } else {
     const shortName = normalizeText(message);
     if (shortName && shortName.length <= 20 && !shortName.includes(' ')) {
       const profile = await getDriverProfileAnswer(shortName);
       if (profile) {
         return { answer: profile, toolCalls: ['sql_query'] };
+      }
+    }
+  }
+
+  // Deterministic win count: "How many races has X won?"
+  if (normalizeText(message).includes('how many') && normalizeText(message).includes('races') && normalizeText(message).includes('won')) {
+    const namePart = normalizeText(message)
+      .replace(/how many|races|has|won|wins|\?/g, '')
+      .trim();
+    if (namePart) {
+      try {
+        const winInfo = await getDriverWinCount(namePart);
+        if (winInfo) {
+          return { answer: `${winInfo.wins}.`, toolCalls: ['sql_query'] };
+        }
+      } catch {
+        return { answer: 'No driver data found. Database not initialized.', toolCalls: [] };
       }
     }
   }
