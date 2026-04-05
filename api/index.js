@@ -14,6 +14,7 @@ const {
   OPENROUTER_APP_NAME,
   EMBEDDING_MODEL = 'text-embedding-3-small',
   ENABLE_KNOWLEDGE_BASE = 'true',
+  DISABLE_TOOLS = 'false',
   DATABASE_URL,
   POSTGRES_URL,
   DATABASE_QUERY_TIMEOUT = '5000',
@@ -118,8 +119,12 @@ Notes:
 `.trim();
 
 const knowledgeEnabled = ENABLE_KNOWLEDGE_BASE === 'true' && Boolean(EMBEDDING_MODEL);
+const isOpenRouter = Boolean(OPENAI_BASE_URL && OPENAI_BASE_URL.includes('openrouter.ai'));
+const toolsDisabled = DISABLE_TOOLS === 'true' || (isOpenRouter && OPENAI_MODEL === 'openrouter/free');
 
-const tools = [
+const tools = toolsDisabled
+  ? []
+  : [
   {
     type: 'function',
     function: {
@@ -228,13 +233,26 @@ async function runAgent({ message, history }) {
   let finalText = '';
 
   for (let i = 0; i < 4; i += 1) {
-    const response = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      messages,
-      tools,
-      tool_choice: 'auto',
-      temperature: 0.2,
-    });
+    let response;
+    try {
+      response = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages,
+        tools,
+        tool_choice: tools.length ? 'auto' : 'none',
+        temperature: 0.2,
+      });
+    } catch (err) {
+      if (!tools.length) {
+        throw err;
+      }
+      // Retry once without tools for models that don't support tool calls (e.g. OpenRouter free).
+      response = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages,
+        temperature: 0.2,
+      });
+    }
 
     const choice = response.choices[0];
     const assistantMessage = choice.message;
