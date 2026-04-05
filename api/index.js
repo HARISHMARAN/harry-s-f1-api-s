@@ -168,6 +168,44 @@ function isSelectOnly(query) {
   return true;
 }
 
+function buildOpenRouterUrl(path) {
+  if (!OPENAI_BASE_URL) return path;
+  const base = OPENAI_BASE_URL.endsWith('/') ? OPENAI_BASE_URL.slice(0, -1) : OPENAI_BASE_URL;
+  return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
+async function openRouterChatFallback(messages) {
+  const url = buildOpenRouterUrl('/chat/completions');
+  const headers = {
+    Authorization: `Bearer ${OPENAI_API_KEY}`,
+    'Content-Type': 'application/json',
+  };
+  if (OPENROUTER_APP_URL) headers['HTTP-Referer'] = OPENROUTER_APP_URL;
+  if (OPENROUTER_APP_NAME) headers['X-Title'] = OPENROUTER_APP_NAME;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages,
+      temperature: 0.2,
+    }),
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      payload?.error?.message ||
+      payload?.message ||
+      `OpenRouter error (${res.status})`;
+    throw new Error(msg);
+  }
+
+  const content = payload?.choices?.[0]?.message?.content ?? '';
+  return content;
+}
+
 async function runSqlQuery(query) {
   if (!isSelectOnly(query)) {
     return { error: 'Only single SELECT statements are permitted.', rows: [], row_count: 0, columns: [] };
@@ -247,14 +285,26 @@ async function runAgent({ message, history }) {
       response = await openai.chat.completions.create(request);
     } catch (err) {
       if (!tools.length) {
+        if (isOpenRouter) {
+          const fallbackText = await openRouterChatFallback(messages);
+          return { answer: fallbackText || 'No response returned.', toolCalls };
+        }
         throw err;
       }
       // Retry once without tools for models that don't support tool calls (e.g. OpenRouter free).
-      response = await openai.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages,
-        temperature: 0.2,
-      });
+      try {
+        response = await openai.chat.completions.create({
+          model: OPENAI_MODEL,
+          messages,
+          temperature: 0.2,
+        });
+      } catch (retryErr) {
+        if (isOpenRouter) {
+          const fallbackText = await openRouterChatFallback(messages);
+          return { answer: fallbackText || 'No response returned.', toolCalls };
+        }
+        throw retryErr;
+      }
     }
 
     const choice = response.choices[0];
