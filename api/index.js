@@ -3,6 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import { Pool } from 'pg';
 import OpenAI from 'openai';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const app = express();
 
@@ -49,6 +51,23 @@ const corsOrigins = API_CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Bool
 
 app.use(cors({ origin: corsOrigins, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
+
+const QA_MAP_PATH = path.join(process.cwd(), 'qa', 'answers.json');
+let QA_MAP = new Map();
+
+try {
+  const raw = fs.readFileSync(QA_MAP_PATH, 'utf8');
+  const entries = JSON.parse(raw);
+  if (Array.isArray(entries)) {
+    entries.forEach((item) => {
+      if (item?.question && item?.answer) {
+        QA_MAP.set(normalizeText(item.question), String(item.answer).trim());
+      }
+    });
+  }
+} catch {
+  // no QA map yet
+}
 
 const SYSTEM_PROMPT = `
 You are an expert Formula One assistant with access to two data tools.
@@ -471,6 +490,11 @@ async function runKnowledgeSearch(query, topK) {
 async function runAgent({ message, history }) {
   const currentYear = new Date().getUTCFullYear();
   const askedYear = extractYear(message);
+
+  const qaAnswer = QA_MAP.get(normalizeText(message));
+  if (qaAnswer) {
+    return { answer: qaAnswer, toolCalls: [] };
+  }
 
   // Deterministic teammate answers (avoid LLM hallucinations)
   if (message.toLowerCase().includes('teammate') || message.toLowerCase().includes('team mate')) {
